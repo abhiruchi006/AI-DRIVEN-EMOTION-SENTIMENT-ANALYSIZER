@@ -242,6 +242,59 @@ class IntegratedAPI:
         except requests.exceptions.RequestException as e:
             return {"success": False, "message": f"Connection error: {str(e)}"}
 
+    def save_mood_entry(self, emotion: str, score: int, notes: str = "", date: str = None) -> dict:
+        """Create or update daily mood entry"""
+        try:
+            payload = {"emotion": emotion, "score": score, "notes": notes}
+            if date:
+                payload["date"] = date
+            response = self.session.post(f"{self.base_url}/api/mood-entry", json=payload, timeout=10)
+            if response.status_code == 200:
+                return {"success": True, "data": response.json()}
+            return {"success": False, "message": response.json().get("detail", "Failed to save mood entry")}
+        except requests.exceptions.RequestException as e:
+            return {"success": False, "message": f"Connection error: {str(e)}"}
+
+    def get_mood_calendar(self, month: str = None) -> dict:
+        """Fetch monthly mood calendar data"""
+        try:
+            url = f"{self.base_url}/api/mood-calendar"
+            if month:
+                url += f"?month={month}"
+            response = self.session.get(url, timeout=10)
+            if response.status_code == 200:
+                return {"success": True, "data": response.json()}
+            return {"success": False, "message": "Failed to get mood calendar"}
+        except requests.exceptions.RequestException as e:
+            return {"success": False, "message": f"Connection error: {str(e)}"}
+
+    def get_mood_tasks(self, emotion: str = None, limit: int = 5) -> dict:
+        try:
+            params = []
+            if emotion:
+                params.append(f"emotion={emotion}")
+            if limit:
+                params.append(f"limit={limit}")
+            query = ("?" + "&".join(params)) if params else ""
+            response = self.session.get(f"{self.base_url}/api/mood-tasks{query}", timeout=10)
+            if response.status_code == 200:
+                return {"success": True, "data": response.json()}
+            return {"success": False, "message": "Failed to get tasks"}
+        except requests.exceptions.RequestException as e:
+            return {"success": False, "message": f"Connection error: {str(e)}"}
+
+    def complete_task(self, task_id: str, date: str = None) -> dict:
+        try:
+            payload = {"task_id": task_id}
+            if date:
+                payload["date"] = date
+            response = self.session.post(f"{self.base_url}/api/mood-task/complete", json=payload, timeout=10)
+            if response.status_code == 200:
+                return {"success": True}
+            return {"success": False, "message": response.json().get("detail", "Failed to complete task")}
+        except requests.exceptions.RequestException as e:
+            return {"success": False, "message": f"Connection error: {str(e)}"}
+
 # Initialize session state
 if 'api_client' not in st.session_state:
     st.session_state.api_client = IntegratedAPI(API_BASE_URL)
@@ -251,6 +304,10 @@ if 'user_authenticated' not in st.session_state:
 
 if 'user_data' not in st.session_state:
     st.session_state.user_data = {}
+
+# Selected date for interactive calendar editing
+if 'selected_date' not in st.session_state:
+    st.session_state.selected_date = datetime.utcnow().strftime("%Y-%m-%d")
 
 def check_backend_status():
     """Check and display backend status"""
@@ -559,6 +616,185 @@ def show_combined_analysis_results(analysis_data):
     else:
         st.error("No valid analysis results received")
 
+def show_mood_calendar():
+    """Interactive Mood Calendar with click-to-edit, insights, and dynamic suggestions"""
+    st.markdown("## 🗓️ Calendar and Task")
+
+    # Ensure a selected date exists (defaults to today UTC)
+    if 'selected_date' not in st.session_state:
+        st.session_state.selected_date = datetime.utcnow().strftime("%Y-%m-%d")
+
+    # Emoji mapping for quick visual cues
+    EMOJI_MAP = {
+        'joy': '😄', 'love': '❤️', 'admiration': '👏', 'amusement': '😆', 'approval': '👍',
+        'caring': '🤝', 'excitement': '🤩', 'gratitude': '🙏', 'optimism': '🌤️', 'pride': '🏅',
+        'relief': '😌', 'neutral': '😐', 'sadness': '😢', 'anger': '😠', 'annoyance': '😑',
+        'fear': '😨', 'disgust': '🤢', 'surprise': '😲', 'confusion': '❓', 'grief': '🖤', 'nervousness': '😬'
+    }
+    def emo(e: str) -> str:
+        return EMOJI_MAP.get((e or 'neutral').lower(), '😐')
+
+    # Month selector (last 6 months)
+    today = datetime.utcnow()
+    months = [f"{(today.replace(day=1) - timedelta(days=30*i)).strftime('%Y-%m')}" for i in range(0, 6)]
+    default_month = st.session_state.selected_date[:7]
+    try:
+        default_idx = months.index(default_month)
+    except ValueError:
+        default_idx = 0
+    month_str = st.selectbox("Select month", months, index=default_idx)
+
+    # Fetch calendar data
+    with st.spinner("Loading calendar..."):
+        cal = st.session_state.api_client.get_mood_calendar(month_str)
+
+    entries = cal["data"].get("entries", []) if cal.get("success") else []
+    entries_by_date = {e["date"]: e for e in entries}
+
+    # Build calendar grid
+    year, mon = map(int, month_str.split("-"))
+    first_day = datetime(year, mon, 1)
+    next_month = first_day.replace(day=28) + timedelta(days=4)
+    last_day = next_month - timedelta(days=next_month.day)
+    days = (last_day - first_day).days + 1
+
+    st.markdown("### Calendar")
+    cols = st.columns(7)
+    for i, w in enumerate(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]):
+        cols[i].markdown(f"**{w}**")
+
+    start_weekday = first_day.weekday()  # Monday=0
+    week_cols = st.columns(7)
+    for i in range(start_weekday):
+        week_cols[i].write(" ")
+
+    col_index = start_weekday
+    for d in range(1, days + 1):
+        date_key = f"{year:04d}-{mon:02d}-{d:02d}"
+        content = entries_by_date.get(date_key)
+        is_selected = (date_key == st.session_state.selected_date)
+        box_style = "border:2px solid #3b82f6;" if is_selected else "border:1px solid #eee;"
+        with week_cols[col_index]:
+            # Plain text layout: day number; if entry exists, show emoji and short text below
+            st.markdown(f"**{d}**")
+            if content:
+                summary = f"{emo(content['emotion'])} {content['emotion'].title()} · {content['score']}"
+                st.markdown(f"<span style='color:#555;font-size:0.9rem;'>{summary}</span>", unsafe_allow_html=True)
+            else:
+                st.write(" ")
+        col_index += 1
+        if col_index > 6 and d != days:
+            week_cols = st.columns(7)
+            col_index = 0
+
+    # Date selector to edit entries without buttons in the calendar
+    sel_date = st.date_input(
+        "Select date to edit",
+        value=datetime.strptime(st.session_state.selected_date, "%Y-%m-%d").date(),
+        key=f"date_picker_{month_str}"
+    )
+    if sel_date.strftime("%Y-%m-%d") != st.session_state.selected_date:
+        st.session_state.selected_date = sel_date.strftime("%Y-%m-%d")
+        st.rerun()
+
+    st.markdown("---")
+
+    # Insights row
+    scores = [e['score'] for e in entries if isinstance(e.get('score'), (int, float))]
+    avg_score = round(sum(scores)/len(scores), 1) if scores else 0
+    # streak counting from selected date backwards
+    try:
+        base_dt = datetime.strptime(st.session_state.selected_date, "%Y-%m-%d")
+    except Exception:
+        base_dt = datetime.utcnow()
+    streak = 0
+    cur = base_dt
+    while entries_by_date.get(cur.strftime("%Y-%m-%d")):
+        streak += 1
+        cur = cur - timedelta(days=1)
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("Monthly average", f"{avg_score}/100")
+    with c2:
+        st.metric("Daily streak", f"{streak} days")
+    with c3:
+        st.metric("Entries this month", f"{len(entries)}")
+
+    # Mini trend line
+    if entries:
+        df = pd.DataFrame(entries)
+        df['date'] = pd.to_datetime(df['date'])
+        df = df.sort_values('date')
+        fig = px.line(df, x='date', y='score', markers=True, title='Mood trend this month')
+        fig.update_layout(height=260, margin=dict(l=10,r=10,t=40,b=10))
+        st.plotly_chart(fig, use_container_width=True)
+
+    # Entry editor for selected date
+    sd = st.session_state.selected_date
+    current = entries_by_date.get(sd, {})
+    st.markdown(f"### Entry for {sd}")
+
+    left, right = st.columns(2)
+    with left:
+        emotion_options = [
+            "joy", "love", "admiration", "amusement", "approval", "caring", "excitement",
+            "gratitude", "optimism", "pride", "relief", "neutral", "sadness", "anger",
+            "annoyance", "fear", "disgust", "surprise", "confusion", "grief", "nervousness"
+        ]
+        default_emotion = current.get("emotion", "neutral")
+        try:
+            default_idx = emotion_options.index(default_emotion)
+        except ValueError:
+            default_idx = emotion_options.index("neutral")
+        emotion = st.selectbox("Emotion", emotion_options, index=default_idx, key=f"emo_{sd}")
+        score = st.slider("Score (0-100)", 0, 100, int(current.get("score", 50)), key=f"score_{sd}")
+    with right:
+        notes = st.text_area("Notes (optional)", value=current.get("notes", ""), height=90, key=f"notes_{sd}")
+        if st.button("Save Entry", type="primary", key=f"save_{sd}"):
+            res = st.session_state.api_client.save_mood_entry(emotion=emotion, score=score, notes=notes, date=sd)
+            if res.get("success"):
+                st.success("Saved entry")
+                st.rerun()
+            else:
+                st.error(res.get("message", "Failed to save"))
+
+    st.markdown("### Suggested tasks to boost your mood")
+    # Increase suggestions when score is low
+    suggested_limit = 8 if score < 40 else (6 if score < 60 else 4)
+    with st.spinner("Fetching suggestions..."):
+        tasks_res = st.session_state.api_client.get_mood_tasks(emotion=emotion, limit=suggested_limit)
+
+    if tasks_res.get("success"):
+        tasks = tasks_res["data"].get("tasks", [])
+        grid = st.columns(2)
+        for i, t in enumerate(tasks):
+            col = grid[i % 2]
+            with col.expander(f"{t['title']} {emo(emotion)} · {t['duration']} min · {t['type'].title()}"):
+                st.write(t["description"])
+                if st.button(f"Mark '{t['id']}' as done", key=f"done_{t['id']}_{sd}"):
+                    done = st.session_state.api_client.complete_task(task_id=t['id'], date=sd)
+                    if done.get("success"):
+                        st.success("Logged as completed.")
+                    else:
+                        st.error(done.get("message", "Failed to record completion"))
+
+        # Quick reflective quiz (if available)
+        quiz = next((t for t in tasks if t.get('type') == 'quiz'), None)
+        if quiz:
+            st.markdown("#### Quick reflection")
+            reflection = st.text_area("Your reflection (optional)", key=f"reflect_{sd}", placeholder="Write one worrying thought and a balanced alternative…")
+            if st.button("Save Reflection to Notes", key=f"save_reflect_{sd}"):
+                new_notes = (notes or current.get('notes', '') or '').strip()
+                if reflection.strip():
+                    new_notes = (new_notes + "\n\nReflection: " + reflection.strip()).strip()
+                res2 = st.session_state.api_client.save_mood_entry(emotion=emotion, score=score, notes=new_notes, date=sd)
+                if res2.get("success"):
+                    st.success("Reflection saved into notes.")
+                else:
+                    st.error(res2.get("message", "Failed to save reflection"))
+
+
 def main_dashboard():
     """Main integrated dashboard"""
     
@@ -585,6 +821,7 @@ def main_dashboard():
                 "📷 Face Analysis", 
                 "🔄 Combined Analysis", 
                 "📊 Analytics & History", 
+                "🗓️ Calendar and Task",
                 "⚙️ System Status"
             ]
         )
@@ -617,6 +854,8 @@ def main_dashboard():
         show_combined_analysis()
     elif page == "📊 Analytics & History":
         show_analytics()
+    elif page == "🗓️ Calendar and Task":
+        show_mood_calendar()
     elif page == "⚙️ System Status":
         show_system_status()
 

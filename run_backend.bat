@@ -1,0 +1,9 @@
+@echo off
+echo Installing PyTorch...
+pip3 install torch>=2.6.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+
+echo Installing other dependencies...
+pip install -r requirements.txt
+
+echo Starting the backend server...
+python main.py

@@ -104,6 +104,90 @@ class UserResponse(BaseModel):
     name: str
     token: str
 
+class MoodEntryRequest(BaseModel):
+    date: Optional[str] = None  # YYYY-MM-DD
+    emotion: str
+    score: int
+    notes: Optional[str] = None
+
+class MoodEntryResponse(BaseModel):
+    success: bool
+    date: str
+    emotion: str
+    score: int
+    notes: Optional[str] = None
+
+class TaskCompletionRequest(BaseModel):
+    task_id: str
+    date: Optional[str] = None
+
+# Suggested mood-boosting tasks library
+MOOD_TASK_LIBRARY = [
+    {
+        "id": "breathing-2min",
+        "title": "2-minute deep breathing",
+        "description": "Inhale for 4s, hold 4s, exhale for 6s. Repeat 8 cycles.",
+        "emotions": ["anger", "sadness", "fear", "annoyance", "stress", "anxiety", "neutral"],
+        "type": "task",
+        "difficulty": "easy",
+        "duration": 2
+    },
+    {
+        "id": "gratitude-3",
+        "title": "Gratitude 3-list",
+        "description": "Write down three things you are grateful for today.",
+        "emotions": ["sadness", "grief", "neutral", "disappointment"],
+        "type": "challenge",
+        "difficulty": "easy",
+        "duration": 5
+    },
+    {
+        "id": "walk-5min",
+        "title": "5-minute mindful walk",
+        "description": "Walk slowly and observe 5 things you can see, 4 you can feel, 3 you can hear.",
+        "emotions": ["anger", "annoyance", "confusion", "fear", "sadness", "neutral"],
+        "type": "task",
+        "difficulty": "easy",
+        "duration": 5
+    },
+    {
+        "id": "kindness-text",
+        "title": "Send a kind message",
+        "description": "Text someone a sincere compliment or thank-you.",
+        "emotions": ["neutral", "sadness", "disgust", "disapproval"],
+        "type": "challenge",
+        "difficulty": "easy",
+        "duration": 3
+    },
+    {
+        "id": "music-boost",
+        "title": "Play your energizing song",
+        "description": "Listen to one song that uplifts you and focus only on the music.",
+        "emotions": ["sadness", "fatigue", "neutral", "fear"],
+        "type": "task",
+        "difficulty": "easy",
+        "duration": 4
+    },
+    {
+        "id": "quiz-reframe",
+        "title": "Thought Reframe Quiz",
+        "description": "Write one worrying thought, then a more balanced alternative.",
+        "emotions": ["fear", "nervousness", "sadness", "annoyance"],
+        "type": "quiz",
+        "difficulty": "medium",
+        "duration": 4
+    },
+    {
+        "id": "smile-min",
+        "title": "1 minute smile practice",
+        "description": "Hold a gentle smile for 60s while relaxing shoulders.",
+        "emotions": ["neutral", "sadness", "anger"],
+        "type": "task",
+        "difficulty": "easy",
+        "duration": 1
+    }
+]
+
 # DeepFace Manager
 class DeepFaceManager:
     """DeepFace integration for facial emotion, age, gender analysis"""
@@ -448,6 +532,34 @@ class DatabaseManager:
                     FOREIGN KEY (user_id) REFERENCES users (id)
                 )
             ''')
+
+            # Table for daily mood entries
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS mood_entries (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT,
+                    date TEXT,
+                    emotion TEXT,
+                    score INTEGER,
+                    notes TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(user_id, date),
+                    FOREIGN KEY (user_id) REFERENCES users (id)
+                )
+            ''')
+
+            # Table for task completions
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS task_completions (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT,
+                    task_id TEXT,
+                    date TEXT,
+                    status TEXT DEFAULT 'completed',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users (id)
+                )
+            ''')
             
             conn.commit()
             conn.close()
@@ -554,6 +666,80 @@ class DatabaseManager:
             
         except Exception as e:
             logger.error(f"❌ Failed to get user analyses: {e}")
+            return []
+
+    def upsert_mood_entry(self, user_id: str, date_str: str, emotion: str, score: int, notes: Optional[str] = None):
+        """Insert or update (by user/date) a daily mood entry"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO mood_entries (id, user_id, date, emotion, score, notes)
+                VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, date) DO UPDATE SET
+                    emotion=excluded.emotion,
+                    score=excluded.score,
+                    notes=excluded.notes
+            ''', (user_id, date_str, emotion, int(score), notes or ''))
+            conn.commit()
+            conn.close()
+            logger.info(f"✅ Mood entry upserted for {user_id} on {date_str}")
+        except Exception as e:
+            logger.error(f"❌ Failed to upsert mood entry: {e}")
+
+    def get_mood_entries_for_month(self, user_id: str, year: int, month: int) -> List[Dict[str, Any]]:
+        """Fetch mood entries for a month"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            start = f"{year:04d}-{month:02d}-01"
+            cursor.execute("SELECT strftime('%Y-%m-%d', date(?, '+1 month', '-1 day'))", (start,))
+            last_day = cursor.fetchone()[0]
+            cursor.execute('''
+                SELECT date, emotion, score, COALESCE(notes, '') FROM mood_entries
+                WHERE user_id = ? AND date BETWEEN ? AND ?
+                ORDER BY date ASC
+            ''', (user_id, start, last_day))
+            rows = cursor.fetchall()
+            conn.close()
+            return [{'date': r[0], 'emotion': r[1], 'score': r[2], 'notes': r[3]} for r in rows]
+        except Exception as e:
+            logger.error(f"❌ Failed to get mood entries: {e}")
+            return []
+
+    def add_task_completion(self, user_id: str, task_id: str, date_str: str):
+        """Record a completed task"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO task_completions (id, user_id, task_id, date, status)
+                VALUES (lower(hex(randomblob(16))), ?, ?, ?, 'completed')
+            ''', (user_id, task_id, date_str))
+            conn.commit()
+            conn.close()
+            logger.info(f"✅ Task {task_id} completed for {user_id} on {date_str}")
+        except Exception as e:
+            logger.error(f"❌ Failed to add task completion: {e}")
+
+    def get_task_completions_for_month(self, user_id: str, year: int, month: int) -> List[Dict[str, Any]]:
+        """Fetch completed tasks for a month"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            start = f"{year:04d}-{month:02d}-01"
+            cursor.execute("SELECT strftime('%Y-%m-%d', date(?, '+1 month', '-1 day'))", (start,))
+            last_day = cursor.fetchone()[0]
+            cursor.execute('''
+                SELECT task_id, date, status FROM task_completions
+                WHERE user_id = ? AND date BETWEEN ? AND ?
+                ORDER BY date ASC
+            ''', (user_id, start, last_day))
+            rows = cursor.fetchall()
+            conn.close()
+            return [{'task_id': r[0], 'date': r[1], 'status': r[2]} for r in rows]
+        except Exception as e:
+            logger.error(f"❌ Failed to get task completions: {e}")
             return []
 
 # Initialize components
@@ -914,6 +1100,65 @@ async def get_user_stats():
     except Exception as e:
         logger.error(f"Failed to get stats: {e}")
         raise HTTPException(status_code=500, detail="Failed to get stats")
+
+@app.post("/api/mood-entry", response_model=MoodEntryResponse)
+async def save_mood_entry(request: MoodEntryRequest):
+    """Create or update a daily mood entry for the current (demo) user"""
+    try:
+        date_str = request.date or datetime.utcnow().strftime("%Y-%m-%d")
+        emotion = request.emotion.lower()
+        score = max(0, min(100, int(request.score)))
+        notes = request.notes or ''
+        user_id = "demo_user"
+        db_manager.upsert_mood_entry(user_id, date_str, emotion, score, notes)
+        return MoodEntryResponse(success=True, date=date_str, emotion=emotion, score=score, notes=notes)
+    except Exception as e:
+        logger.error(f"Failed to save mood entry: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save mood entry")
+
+@app.get("/api/mood-calendar")
+async def get_mood_calendar(month: Optional[str] = None):
+    """Return calendar entries for given month (YYYY-MM). Defaults to current UTC month."""
+    try:
+        today = datetime.utcnow()
+        if month and len(month) == 7:
+            year = int(month.split("-")[0])
+            mon = int(month.split("-")[1])
+        else:
+            year = today.year
+            mon = today.month
+        entries = db_manager.get_mood_entries_for_month("demo_user", year, mon)
+        return {"success": True, "year": year, "month": mon, "entries": entries}
+    except Exception as e:
+        logger.error(f"Failed to get mood calendar: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get mood calendar")
+
+@app.get("/api/mood-tasks")
+async def get_mood_tasks(emotion: Optional[str] = None, limit: int = 5):
+    """Suggest tasks/challenges based on emotion"""
+    em = (emotion or "neutral").lower()
+    # score simple relevance: tasks listing this emotion first, then general ones
+    scored = []
+    for t in MOOD_TASK_LIBRARY:
+        weight = 0
+        if em in t.get("emotions", []):
+            weight += 2
+        if em in ["neutral", "unknown"]:
+            weight += 1
+        scored.append((weight, t))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    tasks = [t for _, t in scored][:max(1, min(limit, 10))]
+    return {"success": True, "tasks": tasks}
+
+@app.post("/api/mood-task/complete")
+async def complete_mood_task(request: TaskCompletionRequest):
+    try:
+        date_str = request.date or datetime.utcnow().strftime("%Y-%m-%d")
+        db_manager.add_task_completion("demo_user", request.task_id, date_str)
+        return {"success": True}
+    except Exception as e:
+        logger.error(f"Failed to complete task: {e}")
+        raise HTTPException(status_code=500, detail="Failed to complete task")
 
 if __name__ == "__main__":
     uvicorn.run(
