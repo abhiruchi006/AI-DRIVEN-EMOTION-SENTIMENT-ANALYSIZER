@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # 🧠 AI-Driven Emotion & Sentiment Analyzer
 
 A comprehensive emotion and sentiment analysis system that combines **text analysis** using Hugging Face transformers and **facial emotion detection** using DeepFace. Built with FastAPI backend and Streamlit frontend.
