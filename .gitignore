@@ -21,3 +21,11 @@ var/
 .env
 venv/
 *.db
+emotion_data.db
+.DS_Store
+*.log
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
